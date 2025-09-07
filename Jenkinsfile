@@ -129,10 +129,7 @@ pipeline {
               fi
 
               sleep 3
-              # Show what's listening
               (command -v ss && ss -ltnp | grep :8080) || (command -v netstat && netstat -tulpn | grep :8080) || true
-
-              # Quick listing for sanity
               ls -la ${TOMCAT_WEBAPPS} || true
             "
           """
@@ -160,17 +157,17 @@ pipeline {
       steps {
         sh """
           echo "Waiting for app to come up: ${HEALTH_URL}"
-          deadline=$((SECONDS+180))
+          deadline=\\$((SECONDS+180))
           status=000
-          while [ \$SECONDS -lt \$deadline ]; do
-            status=\$(curl -sS -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo 000)
-            echo "HTTP status: \$status"
-            case "\$status" in
+          while [ \\$SECONDS -lt \\$deadline ]; do
+            status=\\$(curl -sS -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo 000)
+            echo "HTTP status: \\$status"
+            case "\\$status" in
               2??|3??) echo "App is up"; exit 0 ;;
             esac
             sleep 5
           done
-          echo "Health check failed after 180s (last HTTP: \$status)"
+          echo "Health check failed after 180s (last HTTP: \\$status)"
           exit 1
         """
       }
