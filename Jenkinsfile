@@ -81,7 +81,6 @@ pipeline {
         }
       }
     }
-
 stage('Deploy to Tomcat') {
   steps {
     script {
@@ -92,18 +91,20 @@ stage('Deploy to Tomcat') {
                                          keyFileVariable: 'SSH_KEY',
                                          usernameVariable: 'SSH_USER',
                                          passphraseVariable: 'SSH_PASSPHRASE')]) {
-        // quick host reachability & key load test
+
+        // 1) Quick connectivity + key test
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-echo "Testing SSH key load & reachability..."
-ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER"@"'"${TOMCAT_HOST}"'" "echo ok" || (echo "SSH test failed" && exit 1)
+echo "Testing SSH key load & reachability to ${TOMCAT_HOST} ..."
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@$TOMCAT_HOST" echo ok
 '''
 
-        // deploy
+        // 2) Copy WAR and restart Tomcat
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" '"${war}"' "$SSH_USER"@"'"${TOMCAT_HOST}"'":/tmp/app.war
-ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER"@"'"${TOMCAT_HOST}"'" <<'EOF'
+scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" '"${war}"' "$SSH_USER@$TOMCAT_HOST:/tmp/app.war"
+
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@$TOMCAT_HOST" <<'EOS'
 set -e
 sudo systemctl stop tomcat || true
 sudo rm -f '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'.war
@@ -111,12 +112,13 @@ sudo rm -rf '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'
 sudo cp /tmp/app.war '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'.war
 sudo chown -R tomcat:tomcat '"${TOMCAT_WEBAPPS}"'
 sudo systemctl start tomcat
-EOF
+EOS
 '''
       }
     }
   }
 }
+
 stage('Post-Deploy Check') {
       when { expression { return env.HEALTH_URL?.trim() } }
       steps {
