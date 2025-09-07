@@ -82,31 +82,35 @@ pipeline {
       }
     }
 
-    stage('Deploy to Tomcat') {
-      steps {
-        script {
-          def war = sh(script: "ls -1 target/*.war | head -n1", returnStdout: true).trim()
-          echo "WAR: ${war}"
-          sshagent([env.TOMCAT_SSH_ID]) {
-            sh """
-              set -e
-              scp -o StrictHostKeyChecking=no "${war}" ${TOMCAT_USER}@${TOMCAT_HOST}:/tmp/app.war
-              ssh -o StrictHostKeyChecking=no ${TOMCAT_USER}@${TOMCAT_HOST} '
-                set -e
-                sudo systemctl stop tomcat || true
-                sudo rm -f ${TOMCAT_WEBAPPS}/${APP_NAME}.war
-                sudo rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
-                sudo cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
-                sudo chown -R tomcat:tomcat ${TOMCAT_WEBAPPS}
-                sudo systemctl start tomcat
-              '
-            """
-          }
-        }
+stage('Deploy to Tomcat') {
+  steps {
+    script {
+      def war = sh(script: "ls -1 target/*.war | head -n1", returnStdout: true).trim()
+      echo "WAR: ${war}"
+
+      // Requires a Jenkins credential of type: "SSH Username with private key"
+      // ID must match env.TOMCAT_SSH_ID (e.g., 'tomcat-ssh')
+      withCredentials([sshUserPrivateKey(credentialsId: env.TOMCAT_SSH_ID,
+                                         keyFileVariable: 'SSH_KEY',
+                                         usernameVariable: 'SSH_USER')]) {
+        sh """
+          set -e
+          scp -o StrictHostKeyChecking=no -i "$SSH_KEY" "${war}" ${SSH_USER}@${TOMCAT_HOST}:/tmp/app.war
+          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ${SSH_USER}@${TOMCAT_HOST} '
+            set -e
+            sudo systemctl stop tomcat || true
+            sudo rm -f ${TOMCAT_WEBAPPS}/${APP_NAME}.war
+            sudo rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
+            sudo cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
+            sudo chown -R tomcat:tomcat ${TOMCAT_WEBAPPS}
+            sudo systemctl start tomcat
+          '
+        """
       }
     }
-
-    stage('Post-Deploy Check') {
+  }
+}
+stage('Post-Deploy Check') {
       when { expression { return env.HEALTH_URL?.trim() } }
       steps {
         sh """
