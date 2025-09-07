@@ -51,16 +51,15 @@ stage('Publish to Nexus') {
   steps {
     withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID, usernameVariable: 'NU', passwordVariable: 'NP')]) {
       script {
-        // 1) Read Maven project version
-        def version = sh(script: "mvn -q -DforceStdout help:evaluate -Dexpression=project.version", returnStdout: true).trim()
-        echo "Project version: ${version}"
-
-        // 2) Pick repo based on version type
+        def version   = sh(script: "mvn -q -DforceStdout help:evaluate -Dexpression=project.version", returnStdout: true).trim()
         def isSnapshot = version.endsWith('-SNAPSHOT')
-        def repoPath   = isSnapshot ? 'maven-snapshots' : 'maven-releases'   // Nexus hosted repo names
-        def repoId     = isSnapshot ? 'nexus-snapshots' : 'nexus-releases'   // <server id> in settings.xml
 
-        // 3) Write a temp settings.xml with the chosen <server id>
+        // Nexus 2: repo *IDs* and Nexus 2 URL pattern
+        def repoId   = isSnapshot ? 'maven-snapshots' : 'releases'     // <--- match Nexus 2 repo IDs
+        def repoPath = repoId                                          // path segment equals ID in Nexus 2
+        def url      = "${env.NEXUS_URL}/nexus/content/repositories/${repoPath}/"
+
+        // temp settings.xml with credentials for the chosen server <id>
         writeFile file: 'jenkins-settings.xml', text: """
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -75,18 +74,16 @@ stage('Publish to Nexus') {
 </settings>
 """.stripIndent()
 
-        // 4) Deploy to the correct repo
         sh """
           mvn -B -s jenkins-settings.xml -DskipTests deploy \
-            -DaltDeploymentRepository=${repoId}::default::${env.NEXUS_URL}/repository/${repoPath}/
+            -DaltDeploymentRepository=${repoId}::default::${url}
         """
       }
     }
   }
 }
 
-
-    stage('Deploy to Tomcat') {
+stage('Deploy to Tomcat') {
       steps {
         script {
           def war = sh(script: "ls -1 target/*.war | head -n1", returnStdout: true).trim()
