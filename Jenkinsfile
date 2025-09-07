@@ -10,11 +10,11 @@ pipeline {
     // --- SonarQube ---
     SONARQUBE_SERVER = 'SonarQube'   // Jenkins global server name (Manage Jenkins ➜ System)
 
-    // --- Nexus (use settings.xml with <server id="nexus-releases">) ---
+    // --- Nexus (server id + repo path) ---
     NEXUS_URL        = 'http://54.157.3.135:8081'
-    NEXUS_REPO_ID    = 'nexus-releases'       // must match <server id> in settings.xml
+    NEXUS_REPO_ID    = 'nexus-releases'       // <server id> used in settings.xml
     NEXUS_REPO_PATH  = 'maven-releases'       // hosted repo name in Nexus
-    MVN_SETTINGS_ID  = 'maven-settings-nexus' // Config File Provider ID for settings.xml
+    NEXUS_CRED_ID    = 'nexus-cred'           // Jenkins Username/Password creds for Nexus
 
     // --- Tomcat target host ---
     TOMCAT_HOST      = '3.210.219.27'
@@ -36,9 +36,7 @@ pipeline {
 
     stage('Build') {
       steps {
-        withMaven(maven: 'Maven') {
-          sh 'mvn -B -DskipTests clean package'
-        }
+        sh 'mvn -B -DskipTests clean package'
       }
     }
 
@@ -54,7 +52,7 @@ pipeline {
       steps {
         script {
           timeout(time: 10, unit: 'MINUTES') {
-            def qg = waitForQualityGate()  // requires SonarQube webhook to Jenkins
+            def qg = waitForQualityGate()   // requires SonarQube webhook to Jenkins
             if (qg.status != 'OK') {
               error "Quality Gate failed: ${qg.status}"
             }
@@ -65,11 +63,26 @@ pipeline {
 
     stage('Publish to Nexus') {
       steps {
-        // Uses a Managed File (Config File Provider) "settings.xml" that contains credentials
-        configFileProvider([configFile(fileId: env.MVN_SETTINGS_ID, variable: 'MVN_SETTINGS')]) {
-          withMaven(maven: 'Maven', mavenSettingsConfig: env.MVN_SETTINGS_ID) {
+        withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID, usernameVariable: 'NU', passwordVariable: 'NP')]) {
+          script {
+            // Write a minimal settings.xml with your Nexus <server> creds
+            writeFile file: 'jenkins-settings.xml', text: """
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <servers>
+    <server>
+      <id>${env.NEXUS_REPO_ID}</id>
+      <username>${NU}</username>
+      <password>${NP}</password>
+    </server>
+  </servers>
+</settings>
+""".stripIndent()
+
+            // Deploy using the temporary settings file
             sh """
-              mvn -B -s "$MVN_SETTINGS" -DskipTests deploy \
+              mvn -B -s jenkins-settings.xml -DskipTests deploy \
                 -DaltDeploymentRepository=${env.NEXUS_REPO_ID}::default::${env.NEXUS_URL}/repository/${env.NEXUS_REPO_PATH}/
             """
           }
@@ -125,6 +138,8 @@ pipeline {
     failure { echo '❌ Pipeline failed. Check logs for the failing stage.' }
     always  {
       archiveArtifacts artifacts: '**/target/*.war, **/target/site/**', fingerprint: true, allowEmptyArchive: true
+      // Clean up the temporary settings file if present
+      sh 'rm -f jenkins-settings.xml || true'
     }
   }
 }
