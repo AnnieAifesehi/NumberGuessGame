@@ -1,7 +1,7 @@
 pipeline {
   agent any
   tools { jdk 'Java-17'; maven 'Maven' }
-  options { timestamps(); ansiColor('xterm'); disableConcurrentBuilds() }
+  options { timestamps(); disableConcurrentBuilds() }
 
   environment {
     REPO_URL         = 'https://github.com/AnnieAifesehi/NumberGuessGame.git'
@@ -29,7 +29,9 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps { git branch: env.REPO_BRANCH, url: env.REPO_URL }
+      steps {
+        git branch: env.REPO_BRANCH, url: env.REPO_URL
+      }
     }
 
     stage('Build') {
@@ -51,9 +53,8 @@ pipeline {
     stage('Quality Gate') {
       steps {
         script {
-          // requires SonarQube webhook back to Jenkins
           timeout(time: 10, unit: 'MINUTES') {
-            def qg = waitForQualityGate()  // aborts pipeline on failure
+            def qg = waitForQualityGate()  // requires SonarQube webhook to Jenkins
             if (qg.status != 'OK') {
               error "Quality Gate failed: ${qg.status}"
             }
@@ -64,8 +65,9 @@ pipeline {
 
     stage('Publish to Nexus') {
       steps {
+        // Uses a Managed File (Config File Provider) "settings.xml" that contains credentials
         configFileProvider([configFile(fileId: env.MVN_SETTINGS_ID, variable: 'MVN_SETTINGS')]) {
-          withMaven(globalMavenSettingsConfig: '', mavenSettingsConfig: env.MVN_SETTINGS_ID) {
+          withMaven(maven: 'Maven', mavenSettingsConfig: env.MVN_SETTINGS_ID) {
             sh """
               mvn -B -s "$MVN_SETTINGS" -DskipTests deploy \
                 -DaltDeploymentRepository=${env.NEXUS_REPO_ID}::default::${env.NEXUS_URL}/repository/${env.NEXUS_REPO_PATH}/
@@ -78,7 +80,6 @@ pipeline {
     stage('Deploy to Tomcat') {
       steps {
         script {
-          // Obtain the built WAR path + version from Maven
           def war = sh(script: "ls -1 target/*.war | head -n1", returnStdout: true).trim()
           echo "WAR: ${war}"
 
@@ -105,7 +106,6 @@ pipeline {
     stage('Post-Deploy Check') {
       when { expression { return env.HEALTH_URL?.trim() } }
       steps {
-        // gentle wait for Tomcat to explode the WAR
         sh """
           echo "Waiting for app to come up: ${HEALTH_URL}"
           for i in {1..30}; do
@@ -121,8 +121,10 @@ pipeline {
   }
 
   post {
-    success { echo 'Build, scan, publish, and deploy completed.' }
-    failure { echo 'Pipeline failed. Check logs for the failing stage.' }
-    always  { archiveArtifacts artifacts: '**/target/*.war, **/target/site/**', fingerprint: true, allowEmptyArchive: true }
+    success { echo '✅ Build, scan, publish, and deploy completed.' }
+    failure { echo '❌ Pipeline failed. Check logs for the failing stage.' }
+    always  {
+      archiveArtifacts artifacts: '**/target/*.war, **/target/site/**', fingerprint: true, allowEmptyArchive: true
+    }
   }
 }
