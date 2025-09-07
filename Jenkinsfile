@@ -7,33 +7,35 @@ pipeline {
     REPO_URL         = 'https://github.com/AnnieAifesehi/NumberGuessGame.git'
     REPO_BRANCH      = 'main'
 
-    // SonarQube
+    // SonarQube (Jenkins -> Manage Jenkins -> System -> SonarQube servers)
     SONARQUBE_SERVER = 'SonarQube'
 
     // Nexus 2 base (NO trailing slash; path is added below)
     NEXUS_URL        = 'http://54.157.3.135:8081'
+    NEXUS_CRED_ID    = 'nexus-cred'    // Jenkins Username/Password credential
 
-    // Jenkins creds for Nexus (Username/Password)
-    NEXUS_CRED_ID    = 'nexus-cred'
-
-    // Tomcat target
+    // Tomcat (tarball in ec2-user's home)
     TOMCAT_HOST      = '3.210.219.27'
-    TOMCAT_USER      = 'ec2-user'
-    TOMCAT_SSH_ID    = 'tomcat-ssh'
-    TOMCAT_WEBAPPS   = '/opt/tomcat/webapps'
-    TOMCAT_SERVICE   = 'tomcat'
+    TOMCAT_SSH_ID    = 'tomcat-ssh'    // Jenkins sshUserPrivateKey credential
+    TOMCAT_HOME      = '/home/ec2-user/apache-tomcat-10.1.44'
+    TOMCAT_WEBAPPS   = "${TOMCAT_HOME}/webapps"
     APP_NAME         = 'NumberGuessGame'
 
+    // Optional—handy when you want to curl manually
     HEALTH_URL       = "http://${TOMCAT_HOST}:8080/${APP_NAME}/"
   }
 
   stages {
     stage('Checkout') {
-      steps { git branch: env.REPO_BRANCH, url: env.REPO_URL }
+      steps {
+        git branch: env.REPO_BRANCH, url: env.REPO_URL
+      }
     }
 
     stage('Build') {
-      steps { sh 'mvn -B -DskipTests clean package' }
+      steps {
+        sh 'mvn -B -DskipTests clean package'
+      }
     }
 
     stage('SonarQube Scan') {
@@ -48,11 +50,11 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID, usernameVariable: 'NU', passwordVariable: 'NP')]) {
           script {
-            def version = sh(script: "mvn -q -DforceStdout help:evaluate -Dexpression=project.version", returnStdout: true).trim()
+            def version   = sh(script: "mvn -q -DforceStdout help:evaluate -Dexpression=project.version", returnStdout: true).trim()
             def isSnapshot = version.endsWith('-SNAPSHOT')
             echo "Project version: ${version} (snapshot=${isSnapshot})"
 
-            def repoId = isSnapshot ? 'maven-snapshots' : 'releases'
+            def repoId  = isSnapshot ? 'maven-snapshots' : 'releases'   // must match Nexus 2 repo IDs
             def repoUrl = "${env.NEXUS_URL}/nexus/content/repositories/${repoId}/"
 
             writeFile file: 'jenkins-settings.xml', text: """
@@ -91,53 +93,49 @@ pipeline {
           keyFileVariable: 'SSH_KEY',
           usernameVariable: 'SSH_USER'
         )]) {
+
+          // Reachability
           sh '''
             set -euo pipefail
             echo "Testing SSH to ${TOMCAT_HOST} ..."
             ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" 'echo ok'
           '''
 
+          // Copy artifact
           sh '''
             set -euo pipefail
             echo "Copying ${WAR_PATH} to server..."
             scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "${WAR_PATH}" "$SSH_USER@${TOMCAT_HOST}:/tmp/app.war"
           '''
 
+          // Remote deploy (tarball Tomcat: shutdown.sh/startup.sh)
           sh """
             set -euo pipefail
             ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" "
               set -e
-              sudo install -d -m 0755 ${TOMCAT_WEBAPPS} || true
+              # Stop Tomcat (tarball)
+              if [ -x ${TOMCAT_HOME}/bin/shutdown.sh ]; then ${TOMCAT_HOME}/bin/shutdown.sh || true; fi
 
-              if systemctl list-unit-files | grep -q '^${TOMCAT_SERVICE}\\.service'; then
-                sudo systemctl stop ${TOMCAT_SERVICE} || true
-              else
-                if [ -x /opt/tomcat/bin/shutdown.sh ]; then /opt/tomcat/bin/shutdown.sh || true; fi
-              fi
+              # Ensure webapps dir exists
+              mkdir -p ${TOMCAT_WEBAPPS}
 
-              sudo rm -f ${TOMCAT_WEBAPPS}/${APP_NAME}.war
-              sudo rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
-              sudo cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
+              # Replace app
+              rm -f  ${TOMCAT_WEBAPPS}/${APP_NAME}.war
+              rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
+              cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
 
-              if id tomcat >/dev/null 2>&1; then
-                sudo chown -R tomcat:tomcat ${TOMCAT_WEBAPPS}
-              fi
+              # Start Tomcat (tarball)
+              if [ -x ${TOMCAT_HOME}/bin/startup.sh ]; then ${TOMCAT_HOME}/bin/startup.sh; fi
 
-              if systemctl list-unit-files | grep -q '^${TOMCAT_SERVICE}\\.service'; then
-                sudo systemctl start ${TOMCAT_SERVICE}
-              else
-                if [ -x /opt/tomcat/bin/startup.sh ]; then /opt/tomcat/bin/startup.sh; fi
-              fi
-
+              # Quick sanity
               sleep 3
-              (command -v ss && ss -ltnp | grep :8080) || (command -v netstat && netstat -tulpn | grep :8080) || true
               ls -la ${TOMCAT_WEBAPPS} || true
             "
           """
         }
       }
     }
-  }
+  } // end stages
 
   post {
     success { echo '✅ Build, scan, publish, and deploy completed.' }
