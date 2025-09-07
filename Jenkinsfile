@@ -88,24 +88,31 @@ stage('Deploy to Tomcat') {
       def war = sh(script: "ls -1 target/*.war | head -n1", returnStdout: true).trim()
       echo "WAR: ${war}"
 
-      // Requires a Jenkins credential of type: "SSH Username with private key"
-      // ID must match env.TOMCAT_SSH_ID (e.g., 'tomcat-ssh')
       withCredentials([sshUserPrivateKey(credentialsId: env.TOMCAT_SSH_ID,
                                          keyFileVariable: 'SSH_KEY',
-                                         usernameVariable: 'SSH_USER')]) {
-        sh """
-          set -e
-          scp -o StrictHostKeyChecking=no -i "$SSH_KEY" "${war}" ${SSH_USER}@${TOMCAT_HOST}:/tmp/app.war
-          ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ${SSH_USER}@${TOMCAT_HOST} '
-            set -e
-            sudo systemctl stop tomcat || true
-            sudo rm -f ${TOMCAT_WEBAPPS}/${APP_NAME}.war
-            sudo rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
-            sudo cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
-            sudo chown -R tomcat:tomcat ${TOMCAT_WEBAPPS}
-            sudo systemctl start tomcat
-          '
-        """
+                                         usernameVariable: 'SSH_USER',
+                                         passphraseVariable: 'SSH_PASSPHRASE')]) {
+        // quick host reachability & key load test
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+echo "Testing SSH key load & reachability..."
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER"@"'"${TOMCAT_HOST}"'" "echo ok" || (echo "SSH test failed" && exit 1)
+'''
+
+        // deploy
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" '"${war}"' "$SSH_USER"@"'"${TOMCAT_HOST}"'":/tmp/app.war
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER"@"'"${TOMCAT_HOST}"'" <<'EOF'
+set -e
+sudo systemctl stop tomcat || true
+sudo rm -f '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'.war
+sudo rm -rf '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'
+sudo cp /tmp/app.war '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'.war
+sudo chown -R tomcat:tomcat '"${TOMCAT_WEBAPPS}"'
+sudo systemctl start tomcat
+EOF
+'''
       }
     }
   }
