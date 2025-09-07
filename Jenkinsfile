@@ -47,19 +47,27 @@ pipeline {
         }
       }
     }
+stage('Publish to Nexus') {
+  steps {
+    withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID, usernameVariable: 'NU', passwordVariable: 'NP')]) {
+      script {
+        // 1) Read Maven project version
+        def version = sh(script: "mvn -q -DforceStdout help:evaluate -Dexpression=project.version", returnStdout: true).trim()
+        echo "Project version: ${version}"
 
-    stage('Publish to Nexus') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID, usernameVariable: 'NU', passwordVariable: 'NP')]) {
-          script {
-            // Write a minimal settings.xml with your Nexus <server> creds
-            writeFile file: 'jenkins-settings.xml', text: """
+        // 2) Pick repo based on version type
+        def isSnapshot = version.endsWith('-SNAPSHOT')
+        def repoPath   = isSnapshot ? 'maven-snapshots' : 'maven-releases'   // Nexus hosted repo names
+        def repoId     = isSnapshot ? 'nexus-snapshots' : 'nexus-releases'   // <server id> in settings.xml
+
+        // 3) Write a temp settings.xml with the chosen <server id>
+        writeFile file: 'jenkins-settings.xml', text: """
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
   <servers>
     <server>
-      <id>${env.NEXUS_REPO_ID}</id>
+      <id>${repoId}</id>
       <username>${NU}</username>
       <password>${NP}</password>
     </server>
@@ -67,15 +75,16 @@ pipeline {
 </settings>
 """.stripIndent()
 
-            // Deploy using the temporary settings file
-            sh """
-              mvn -B -s jenkins-settings.xml -DskipTests deploy \
-                -DaltDeploymentRepository=${env.NEXUS_REPO_ID}::default::${env.NEXUS_URL}/repository/${env.NEXUS_REPO_PATH}/
-            """
-          }
-        }
+        // 4) Deploy to the correct repo
+        sh """
+          mvn -B -s jenkins-settings.xml -DskipTests deploy \
+            -DaltDeploymentRepository=${repoId}::default::${env.NEXUS_URL}/repository/${repoPath}/
+        """
       }
     }
+  }
+}
+
 
     stage('Deploy to Tomcat') {
       steps {
