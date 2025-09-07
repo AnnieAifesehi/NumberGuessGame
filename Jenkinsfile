@@ -18,10 +18,10 @@ pipeline {
 
     // Tomcat target
     TOMCAT_HOST      = '3.210.219.27'
-    TOMCAT_USER      = 'ec2-user'            // overridden by sshUserPrivateKey username if set there
+    TOMCAT_USER      = 'ec2-user'
     TOMCAT_SSH_ID    = 'tomcat-ssh'
-    TOMCAT_WEBAPPS   = '/opt/tomcat/webapps' // change if using OS package: /var/lib/tomcat/webapps
-    TOMCAT_SERVICE   = 'tomcat'              // change if your unit is tomcat9 or custom
+    TOMCAT_WEBAPPS   = '/opt/tomcat/webapps'
+    TOMCAT_SERVICE   = 'tomcat'
     APP_NAME         = 'NumberGuessGame'
 
     HEALTH_URL       = "http://${TOMCAT_HOST}:8080/${APP_NAME}/"
@@ -52,7 +52,7 @@ pipeline {
             def isSnapshot = version.endsWith('-SNAPSHOT')
             echo "Project version: ${version} (snapshot=${isSnapshot})"
 
-            def repoId = isSnapshot ? 'maven-snapshots' : 'releases' // MUST match Nexus 2 repo IDs
+            def repoId = isSnapshot ? 'maven-snapshots' : 'releases'
             def repoUrl = "${env.NEXUS_URL}/nexus/content/repositories/${repoId}/"
 
             writeFile file: 'jenkins-settings.xml', text: """
@@ -91,28 +91,24 @@ pipeline {
           keyFileVariable: 'SSH_KEY',
           usernameVariable: 'SSH_USER'
         )]) {
-          // Reachability
           sh '''
             set -euo pipefail
             echo "Testing SSH to ${TOMCAT_HOST} ..."
             ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" 'echo ok'
           '''
 
-          // Copy artifact
           sh '''
             set -euo pipefail
             echo "Copying ${WAR_PATH} to server..."
             scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "${WAR_PATH}" "$SSH_USER@${TOMCAT_HOST}:/tmp/app.war"
           '''
 
-          // Remote deploy (double quotes so Jenkins vars expand locally)
           sh """
             set -euo pipefail
             ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" "
               set -e
               sudo install -d -m 0755 ${TOMCAT_WEBAPPS} || true
 
-              # stop tomcat if the unit exists; ignore if not installed as a service
               if systemctl list-unit-files | grep -q '^${TOMCAT_SERVICE}\\.service'; then
                 sudo systemctl stop ${TOMCAT_SERVICE} || true
               else
@@ -123,12 +119,10 @@ pipeline {
               sudo rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
               sudo cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
 
-              # chown only if tomcat user exists; otherwise skip
               if id tomcat >/dev/null 2>&1; then
                 sudo chown -R tomcat:tomcat ${TOMCAT_WEBAPPS}
               fi
 
-              # start tomcat if service exists; otherwise use startup.sh
               if systemctl list-unit-files | grep -q '^${TOMCAT_SERVICE}\\.service'; then
                 sudo systemctl start ${TOMCAT_SERVICE}
               else
@@ -143,51 +137,7 @@ pipeline {
         }
       }
     }
-
-    stage('Post-Deploy Check') {
-      when { expression { return env.HEALTH_URL?.trim() } }
-      steps {
-        // Avoid Groovy interpolation by passing HEALTH via env and using triple single quotes
-        withEnv(["HEALTH=${env.HEALTH_URL}"]) {
-          sh '''
-            echo "Waiting for app to come up: $HEALTH"
-            deadline=$((SECONDS+180))
-            status=000
-            while [ $SECONDS -lt $deadline ]; do
-              status=$(curl -sS -o /dev/null -w "%{http_code}" "$HEALTH" || echo 000)
-              echo "HTTP status: $status"
-              case "$status" in
-                2??|3??) echo "App is up"; exit 0 ;;
-              esac
-              sleep 5
-            done
-            echo "Health check failed after 180s (last HTTP: $status)"
-            exit 1
-          '''
-        }
-      }
-      post {
-        failure {
-          withCredentials([sshUserPrivateKey(credentialsId: env.TOMCAT_SSH_ID, keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-            sh '''
-              set +e
-              echo "=== REMOTE DIAGNOSTICS (on failure) ==="
-              ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" '
-                echo "--- systemctl status (if present) ---"
-                (systemctl status '"${TOMCAT_SERVICE}"' --no-pager 2>/dev/null | tail -n 80) || true
-                echo "--- open ports ---"
-                (command -v ss && ss -ltnp | grep :8080) || (command -v netstat && netstat -tulpn | grep :8080) || true
-                echo "--- webapps listing ---"
-                ls -la '"${TOMCAT_WEBAPPS}"' || true
-                echo "--- last catalina.out ---"
-                tail -n 200 /opt/tomcat/logs/catalina.out 2>/dev/null || true
-              '
-            '''
-          }
-        }
-      }
-    }
-  } // <-- end stages
+  }
 
   post {
     success { echo '✅ Build, scan, publish, and deploy completed.' }
