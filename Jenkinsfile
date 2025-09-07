@@ -81,41 +81,47 @@ pipeline {
         }
       }
     }
-    
-stage('Deploy to Tomcat') {
+    stage('Deploy to Tomcat') {
   steps {
     script {
-      def war = sh(script: "ls -1 target/*.war | head -n1", returnStdout: true).trim()
-      echo "WAR: ${war}"
-
-      withCredentials([sshUserPrivateKey(credentialsId: env.TOMCAT_SSH_ID,
-                                         keyFileVariable: 'SSH_KEY',
-                                         usernameVariable: 'SSH_USER')]) {
-        withEnv(["WAR_PATH=${war}"]) {
-          sh '''#!/usr/bin/env bash
-set -euo pipefail
-echo "Testing SSH to ${TOMCAT_HOST} ..."
-ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@$TOMCAT_HOST" echo ok
-
-echo "Copying $WAR_PATH to server..."
-scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$WAR_PATH" "$SSH_USER@$TOMCAT_HOST:/tmp/app.war"
-
-ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@$TOMCAT_HOST" <<'EOS'
-set -e
-sudo systemctl stop tomcat || true
-sudo rm -f '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'.war
-sudo rm -rf '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'
-sudo cp /tmp/app.war '"${TOMCAT_WEBAPPS}"'/'"${APP_NAME}"'.war
-sudo chown -R tomcat:tomcat '"${TOMCAT_WEBAPPS}"'
-sudo systemctl start tomcat
-EOS
-'''
-        }
-      }
+      // Find the built WAR
+      def war = sh(script: 'ls -1 target/*.war | head -n1', returnStdout: true).trim()
+      env.WAR_PATH = war
     }
+
+    // Quick reachability check
+    sh '''
+      set -euo pipefail
+      echo "Testing SSH to ${TOMCAT_HOST} ..."
+      ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" 'echo ok'
+    '''
+
+    // Copy artifact
+    sh '''
+      set -euo pipefail
+      echo "Copying ${WAR_PATH} to server..."
+      scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "${WAR_PATH}" "$SSH_USER@${TOMCAT_HOST}:/tmp/app.war"
+    '''
+
+    // Remote deploy (NOTE: double quotes so Jenkins vars expand locally)
+    sh """
+      set -euo pipefail
+      ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@${TOMCAT_HOST}" "
+        set -e
+        sudo install -d -o tomcat -g tomcat -m 0755 ${TOMCAT_WEBAPPs:-/var/lib/tomcat/webapps} || true
+        sudo systemctl stop ${TOMCAT_SERVICE}
+        sudo rm -f ${TOMCAT_WEBAPPS}/${APP_NAME}.war
+        sudo rm -rf ${TOMCAT_WEBAPPS}/${APP_NAME}
+        sudo cp /tmp/app.war ${TOMCAT_WEBAPPS}/${APP_NAME}.war
+        sudo chown -R tomcat:tomcat ${TOMCAT_WEBAPPS}
+        sudo systemctl start ${TOMCAT_SERVICE}
+        sleep 2
+        systemctl is-active ${TOMCAT_SERVICE}
+      "
+    """
   }
 }
-    
+
 stage('Post-Deploy Check') {
       when { expression { return env.HEALTH_URL?.trim() } }
       steps {
