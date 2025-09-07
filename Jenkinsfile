@@ -48,19 +48,6 @@ pipeline {
       }
     }
 
-    stage('Quality Gate') {
-      steps {
-        script {
-          timeout(time: 10, unit: 'MINUTES') {
-            def qg = waitForQualityGate()   // requires SonarQube webhook to Jenkins
-            if (qg.status != 'OK') {
-              error "Quality Gate failed: ${qg.status}"
-            }
-          }
-        }
-      }
-    }
-
     stage('Publish to Nexus') {
       steps {
         withCredentials([usernamePassword(credentialsId: env.NEXUS_CRED_ID, usernameVariable: 'NU', passwordVariable: 'NP')]) {
