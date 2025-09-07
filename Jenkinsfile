@@ -81,6 +81,7 @@ pipeline {
         }
       }
     }
+    
 stage('Deploy to Tomcat') {
   steps {
     script {
@@ -89,20 +90,15 @@ stage('Deploy to Tomcat') {
 
       withCredentials([sshUserPrivateKey(credentialsId: env.TOMCAT_SSH_ID,
                                          keyFileVariable: 'SSH_KEY',
-                                         usernameVariable: 'SSH_USER',
-                                         passphraseVariable: 'SSH_PASSPHRASE')]) {
-
-        // 1) Quick connectivity + key test
-        sh '''#!/usr/bin/env bash
+                                         usernameVariable: 'SSH_USER')]) {
+        withEnv(["WAR_PATH=${war}"]) {
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
-echo "Testing SSH key load & reachability to ${TOMCAT_HOST} ..."
+echo "Testing SSH to ${TOMCAT_HOST} ..."
 ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@$TOMCAT_HOST" echo ok
-'''
 
-        // 2) Copy WAR and restart Tomcat
-        sh '''#!/usr/bin/env bash
-set -euo pipefail
-scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" '"${war}"' "$SSH_USER@$TOMCAT_HOST:/tmp/app.war"
+echo "Copying $WAR_PATH to server..."
+scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$WAR_PATH" "$SSH_USER@$TOMCAT_HOST:/tmp/app.war"
 
 ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$SSH_KEY" "$SSH_USER@$TOMCAT_HOST" <<'EOS'
 set -e
@@ -114,11 +110,12 @@ sudo chown -R tomcat:tomcat '"${TOMCAT_WEBAPPS}"'
 sudo systemctl start tomcat
 EOS
 '''
+        }
       }
     }
   }
 }
-
+    
 stage('Post-Deploy Check') {
       when { expression { return env.HEALTH_URL?.trim() } }
       steps {
