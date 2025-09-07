@@ -61,13 +61,13 @@
     </plugins>
   </build>
 <distributionManagement>
-  <snapshotRepository>
-    <id>nexus-snapshots</id>
-    <url>http://54.157.3.135:8081/repository/maven-snapshots/</url>
-  </snapshotRepository>
   <repository>
-    <id>nexus-releases</id>
-    <url>http://54.157.3.135:8081/repository/maven-releases/</url>
+    <id>releases</id>
+    <url>http://54.157.3.135:8081/nexus/content/repositories/releases/</url>
   </repository>
+  <snapshotRepository>
+    <id>maven-snapshots</id>
+    <url>http://54.157.3.135:8081/nexus/content/repositories/maven-snapshots/</url>
+  </snapshotRepository>
 </distributionManagement>
 </project>
